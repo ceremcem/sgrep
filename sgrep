@@ -1,0 +1,129 @@
+#!/bin/bash 
+
+# sgrep: Section Grep
+# details: http://unix.stackexchange.com/questions/184340/how-to-grep-a-line-with-unknown-number-of-its-indented-lines
+
+# both works: 
+#
+#     cat /dev/stdin | perl -ne '/^( *)/; $i = length $1; $j && $i >= $j and print, next; $j = 0; /'"$REGEXP"'/ and $j = $i + 1, print'
+#     cat /dev/stdin | awk '/'"$REGEXP"'/ && !f{f=1;x=$0;sub(/[^ ].*/,"",x);x=x" ";print;next} f {if (substr($0,1,length(x))==x)print; else f=0}'
+
+if [[ "$@" == "" ]]; then 
+  cat <<HELP
+    
+    "Section grep" prints the line or lines matching with the first 
+    argument and its children [or its parent's children]. 
+    
+    usage: 
+      
+        ./sgrep "the-regex" [-p]
+        
+    -p : Print the matching line's parent's children. 
+    
+    example: 
+    
+        $ sudo iwlist wlan0 scan | ./sgrep my-ess-id -p 
+        
+HELP
+  exit
+fi
+
+awk_program=$(cat << 'EOF'
+  BEGIN{
+    depth=-1
+    
+  }
+  
+  f {
+    if (substr($0,1,length(x))==x){
+      #print NR, $0
+    }
+    else { 
+      match_ends_at_line=NR-1
+      f=0
+    }  
+  } 
+  
+  $0 ~ re_arg && !f{
+    f=1
+    x=$0
+    sub(/[^ ].*/,"",x)
+    x=x" " 
+    depth=length(x)
+    match_found_at_line=NR
+    #print NR, $0
+    #next
+  } 
+  
+  {
+    buff[NR]=$0
+  }
+  
+  function get_depth(line){
+    x=line
+    sub(/[^ ].*/,"",x)
+    x=x" " 
+    return length(x)
+  }
+  END{
+    # find parent's start line number:
+    # --------------------------
+    parent_line = match_found_at_line
+    parent_depth = depth
+    for (i = match_found_at_line - 1; i >= 1; i--) {
+      #print "parent line: "i, get_depth(buff[i]), buff[i]
+      if (get_depth(buff[i]) < depth){
+        parent_line = i
+        parent_depth = get_depth(buff[i])
+        break
+      } 
+      if (get_depth(buff[i]) > depth){
+        break
+      }
+    }
+    
+    # find parent's end line number: 
+    # -------------------------------
+    parent_end_line = parent_line
+    for (i = parent_line + 1; i <= length(buff); i++){
+      if (get_depth(buff[i]) <= parent_depth){
+        parent_end_line = i - 1
+        break
+      }
+    }
+    
+    
+    # debug output
+    # ------------
+    #print "parent:"parent_line" match_found:"match_found_at_line" indent:"depth" match_ends:"match_ends_at_line" parent_ends:"parent_end_line
+    
+    # print result
+    # -------------
+    if (print_parent == 1){
+      start_line = parent_line
+      end_line = parent_end_line
+    } else {
+      start_line = match_found_at_line
+      end_line = match_ends_at_line
+    }
+    for (i = start_line; i <= end_line; i++){
+      print buff[i]
+    }
+  }
+  
+EOF
+)
+
+REGEXP="$1"
+#REGEXP='ESSID:"aea"'
+#REGEXP='wlan0'
+#REGEXP='Bit Rates' # TODO: finds only one occurience, should find all occuriences, fix this! 
+#REGEXP='Cell 08'
+
+PARENT=0
+if [[ "$2" == "-p" ]]; then 
+  # print parent section
+  PARENT=1
+fi
+
+cat /dev/stdin | awk -v re_arg="${REGEXP}" -v print_parent="$PARENT" "$awk_program"
